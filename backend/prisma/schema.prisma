@@ -1,0 +1,404 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// Users & Authentication
+// ============================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  passwordHash  String
+  firstName     String?
+  lastName      String?
+  role          UserRole  @default(CUSTOMER)
+  isActive      Boolean   @default(true)
+  lastLoginAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  verifications          Verification[]
+  reviewedVerifications  Verification[] @relation("Reviewer")
+  appliedRules           RuleApplication[]
+  auditLogs              AuditLog[]
+  sessions               Session[]
+
+  @@index([email])
+  @@index([role])
+}
+
+enum UserRole {
+  CUSTOMER
+  REVIEWER
+  COMPLIANCE_MANAGER
+  ADMIN
+}
+
+model Session {
+  id            String    @id @default(cuid())
+  userId        String
+  token         String    @unique
+  refreshToken  String    @unique
+  expiresAt     DateTime
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+}
+
+// ============================================
+// Identity Verification Workflow
+// ============================================
+
+model Verification {
+  id                    String                 @id @default(cuid())
+  userId                String
+  status                VerificationStatus     @default(PENDING)
+  currentStage          VerificationStage      @default(DOCUMENT_SUBMISSION)
+  riskScore             Int                    @default(0)
+  attemptCount          Int                    @default(0)
+  lastAttemptAt         DateTime?
+  completedAt           DateTime?
+  expiresAt             DateTime?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+
+  // Relations
+  user                  User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviewer              User?                  @relation("Reviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  reviewerId            String?
+  documents             Document[]
+  personalInfo          PersonalInformation?
+  checks                VerificationCheck[]
+  appliedRules          RuleApplication[]
+  auditEntries          AuditLog[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([currentStage])
+  @@index([expiresAt])
+}
+
+enum VerificationStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  EXPIRED
+  CANCELLED
+}
+
+enum VerificationStage {
+  DOCUMENT_SUBMISSION
+  DOCUMENT_VERIFICATION
+  IDENTITY_CHECK
+  RISK_ASSESSMENT
+  FINAL_REVIEW
+  COMPLETED
+}
+
+model PersonalInformation {
+  id                String        @id @default(cuid())
+  verificationId    String        @unique
+  firstName         String
+  lastName          String
+  dateOfBirth       DateTime
+  nationality       String
+  countryOfResidence String
+  phoneNumber       String?
+  address           String?
+  city              String?
+  state             String?
+  postalCode        String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  verification      Verification  @relation(fields: [verificationId], references: [id], onDelete: Cascade)
+
+  @@index([verificationId])
+}
+
+// ============================================
+// Documents
+// ============================================
+
+model Document {
+  id                String              @id @default(cuid())
+  verificationId    String
+  type              DocumentType
+  fileName          String
+  fileUrl           String
+  fileHash          String              @unique
+  mimeType          String
+  fileSize          Int
+  uploadedAt        DateTime            @default(now())
+  expiresAt         DateTime?
+  status            DocumentStatus      @default(PENDING_REVIEW)
+  verificationStatus DocumentVerificationStatus @default(PENDING)
+  ocrData           String?             // Extracted text from OCR
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  verification      Verification        @relation(fields: [verificationId], references: [id], onDelete: Cascade)
+  verificationCheck DocumentVerification?
+
+  @@index([verificationId])
+  @@index([type])
+  @@index([status])
+}
+
+enum DocumentType {
+  PASSPORT
+  NATIONAL_ID
+  DRIVERS_LICENSE
+  VISA
+  RESIDENCE_PERMIT
+  UTILITY_BILL
+  BANK_STATEMENT
+  GOVERNMENT_LETTER
+  OTHER
+}
+
+enum DocumentStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  EXPIRED
+  UNDER_REVIEW
+}
+
+enum DocumentVerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REQUIRES_RESUBMISSION
+}
+
+model DocumentVerification {
+  id                String            @id @default(cuid())
+  documentId        String            @unique
+  isExpired         Boolean           @default(false)
+  hasValidSignature Boolean           @default(false)
+  hasSecurityFeatures Boolean         @default(true)
+  confidence        Float             @default(0)
+  notes             String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  document          Document          @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+}
+
+// ============================================
+// Verification Checks
+// ============================================
+
+model VerificationCheck {
+  id                String              @id @default(cuid())
+  verificationId    String
+  checkType         CheckType
+  status            CheckStatus         @default(PENDING)
+  result            CheckResult         @default(UNKNOWN)
+  riskLevel         RiskLevel           @default(MEDIUM)
+  metadata          String?             // JSON metadata
+  errorMessage      String?
+  executedAt        DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  verification      Verification        @relation(fields: [verificationId], references: [id], onDelete: Cascade)
+
+  @@index([verificationId])
+  @@index([checkType])
+  @@index([status])
+}
+
+enum CheckType {
+  DOCUMENT_VALIDITY
+  DOCUMENT_AUTHENTICITY
+  FACE_MATCH
+  LIVENESS
+  SANCTION_CHECK
+  PEP_CHECK
+  DUPLICATE_CHECK
+  AGE_VERIFICATION
+  CUSTOM_RULE
+}
+
+enum CheckStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+enum CheckResult {
+  UNKNOWN
+  PASS
+  FAIL
+  MANUAL_REVIEW_REQUIRED
+  INCONCLUSIVE
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+// ============================================
+// Rules Engine
+// ============================================
+
+model Rule {
+  id                String              @id @default(cuid())
+  name              String              @unique
+  description       String?
+  ruleType          RuleType
+  priority          Int                 @default(0)
+  conditions        String              // JSON: conditions to evaluate
+  actions           String              // JSON: actions to take
+  isActive          Boolean             @default(true)
+  createdBy         String?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  applications      RuleApplication[]
+
+  @@index([ruleType])
+  @@index([isActive])
+}
+
+enum RuleType {
+  DOCUMENT_REQUIREMENT
+  DOCUMENT_EXPIRY
+  AGE_REQUIREMENT
+  COUNTRY_RESTRICTION
+  DUPLICATE_DETECTION
+  SANCTION_CHECK
+  RISK_ASSESSMENT
+  CUSTOM
+}
+
+model RuleApplication {
+  id                String              @id @default(cuid())
+  ruleId            String
+  verificationId    String
+  userId            String
+  result            RuleApplicationResult
+  matchedConditions String?             // JSON: which conditions matched
+  metadata          String?
+  appliedAt         DateTime            @default(now())
+  createdAt         DateTime            @default(now())
+
+  rule              Rule                @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  verification      Verification        @relation(fields: [verificationId], references: [id], onDelete: Cascade)
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([ruleId])
+  @@index([verificationId])
+  @@index([userId])
+}
+
+enum RuleApplicationResult {
+  PASS
+  FAIL
+  MANUAL_REVIEW
+  SKIP
+}
+
+// ============================================
+// Audit Logging
+// ============================================
+
+model AuditLog {
+  id                String              @id @default(cuid())
+  userId            String
+  verificationId    String
+  action            AuditAction
+  resourceType      String
+  resourceId        String
+  previousValues    String?             // JSON
+  newValues         String?             // JSON
+  metadata          String?             // JSON
+  ipAddress         String?
+  userAgent         String?
+  createdAt         DateTime            @default(now())
+
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  verification      Verification        @relation(fields: [verificationId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([verificationId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+enum AuditAction {
+  VERIFICATION_CREATED
+  VERIFICATION_UPDATED
+  VERIFICATION_SUBMITTED
+  DOCUMENT_UPLOADED
+  DOCUMENT_REJECTED
+  PERSONAL_INFO_SUBMITTED
+  CHECK_INITIATED
+  CHECK_COMPLETED
+  RULE_APPLIED
+  STATUS_CHANGED
+  REVIEW_STARTED
+  REVIEW_COMPLETED
+  VERIFICATION_APPROVED
+  VERIFICATION_REJECTED
+  USER_LOGGED_IN
+  USER_LOGGED_OUT
+  SESSION_CREATED
+  SESSION_EXPIRED
+  SYSTEM_ACTION
+}
+
+// ============================================
+// Configuration & Metadata
+// ============================================
+
+model SystemConfig {
+  id                String              @id @default(cuid())
+  key               String              @unique
+  value             String              // JSON
+  description       String?
+  isSecret          Boolean             @default(false)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  @@index([key])
+}
+
+model WebhookLog {
+  id                String              @id @default(cuid())
+  eventType         String
+  verificationId    String?
+  payload           String              // JSON
+  statusCode        Int?
+  response          String?
+  retryCount        Int                 @default(0)
+  nextRetryAt       DateTime?
+  createdAt         DateTime            @default(now())
+
+  @@index([eventType])
+  @@index([verificationId])
+  @@index([createdAt])
+}
